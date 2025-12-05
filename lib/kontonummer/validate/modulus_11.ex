@@ -48,8 +48,8 @@ defmodule Kontonummer.Validate.Modulus11 do
   """
   @spec valid?([integer()]) :: boolean()
   def valid?(digits) when is_list(digits) do
-    digits
-    |> checksum()
+    sum = checksum(digits)
+    sum
     |> divisible_by_11?()
   end
 
