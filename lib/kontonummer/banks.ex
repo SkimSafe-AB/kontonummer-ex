@@ -31,6 +31,7 @@ defmodule Kontonummer.Banks do
         }
 
   @type bank :: %{
+          optional(:clearing_length) => 4 | 5,
           name: String.t(),
           type: integer(),
           comment: integer(),
@@ -389,6 +390,7 @@ defmodule Kontonummer.Banks do
       type: 2,
       comment: 3,
       ranges: [%{start: 8_000, finish: 8_999}],
+      clearing_length: 5,
       account_min_length: 2,
       account_max_length: 10
     },
