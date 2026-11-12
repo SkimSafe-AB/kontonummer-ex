@@ -15,7 +15,7 @@ by adding `kontonummer` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:kontonummer, "~> 0.1.0"}
+    {:kontonummer, "~> 0.2.0"}
   ]
 end
 ```

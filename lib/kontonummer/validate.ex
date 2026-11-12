@@ -18,6 +18,17 @@ defmodule Kontonummer.Validate do
   - **Comment 2**: 9 account digits, Modulus-11
   - **Comment 3**: Up to 10 account digits (padded), Modulus-10
 
+  ### Swedbank clearing numbers starting with 8
+  Swedbank clearing numbers in the range 8000-8999 have five digits, written `8XXX-C`.
+  The fifth digit is a Modulus-10 check digit over the first four and is required.
+  It may be separated by a hyphen, space or comma, or written without a separator.
+  ("8327-9", "8327 9", "83279").
+  - A missing fifth figit retusn `{:error, :missing_clearing_check_digit}`
+  - A wrong fifth digit returns `{:error, :invalid_clearing_check_digit}`
+  - The `clearing`in the result is formatted as a string, e.g. `"8327-9"`
+
+  Use `suggest_clearing/1` to get the correct 5-digit clearing number.
+
   ## Examples
 
       # Validate full account number
@@ -58,6 +69,9 @@ defmodule Kontonummer.Validate do
       iex> Kontonummer.Validate.account("6761-755555112")
       {:ok, %{bank: "Handelsbanken", valid: true, type: 2, comment: 2, clearing: 6761, account: "755555112"}}
 
+      iex> Kontonummer.Validate.account("8327-9 1234567897")
+      {:ok, %{bank: "Swedbank", valid: true, type: 2, comment: 3, clearing: "8327-9", account: "1234567897"}}
+
       iex> Kontonummer.Validate.account("0000-1234567")
       {:error, :bank_not_found}
 
@@ -66,10 +80,12 @@ defmodule Kontonummer.Validate do
   """
   @spec account(String.t()) :: {:ok, map()} | {:error, atom()}
   def account(account_number) when is_binary(account_number) do
-    with {:ok, clearing, account_digits} <- parse_account_number(account_number),
+    with {:ok, clearing, digits} <- parse_account_number(account_number),
          {:ok, bank} <- find_bank(clearing),
+         {:ok, check_digit, account_digits} <- take_check_digit(bank, digits),
+         :ok <- validate_check_digit(clearing, check_digit),
          {:ok, is_valid} <- validate_with_bank(bank, clearing, account_digits) do
-      {:ok, build_result(bank, clearing, digits_to_string(account_digits), is_valid)}
+      {:ok, build_result(bank, clearing, check_digit, digits_to_string(account_digits), is_valid)}
     end
   end
 
@@ -80,7 +96,8 @@ defmodule Kontonummer.Validate do
   as separate values.
 
   ## Parameters
-  - `clearing` - Clearing number as integer or string (e.g., 9660 or "9660")
+  - `clearing` - Clearing number as integer or string (e.g., 9660, "9660" or "8327-9")
+    Swedbank clearing numbers starting with 8 require a fifth check digit.
   - `account_number` - Account number as string (e.g., "1234567")
 
   ## Returns
@@ -95,25 +112,80 @@ defmodule Kontonummer.Validate do
       iex> Kontonummer.Validate.account("6761", "755555112")
       {:ok, %{bank: "Handelsbanken", valid: true, type: 2, comment: 2, clearing: 6761, account: "755555112"}}
 
+      iex> Kontonummer.Validate.account("8327-9", "1234567897")
+      {:ok, %{bank: "Swedbank", valid: true, type: 2, comment: 3, clearing: "8327-9", account: "1234567897"}}
+
       iex> Kontonummer.Validate.account(0, "1234567")
       {:error, :bank_not_found}
 
       iex> Kontonummer.Validate.account(9660, "12345")
       {:error, :invalid_length}
+
+      iex> Kontonummer.Validate.account(8327, "1234567897")
+      {:error, :missing_clearing_check_digit}
+
+      iex> Kontonummer.Validate.account("8327-1", "1234567897")
+      {:error, :invalid_clearing_check_digit}
   """
   @spec account(integer() | String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
   def account(clearing, account_number) when is_integer(clearing) and is_binary(account_number) do
+    {clearing, check_digit} = split_clearing(clearing)
+
     with {:ok, account_digits} <- parse_digits(account_number),
          {:ok, bank} <- find_bank(clearing),
+         :ok <- validate_clearing_length(bank, check_digit),
+         :ok <- validate_check_digit(clearing, check_digit),
          {:ok, is_valid} <- validate_with_bank(bank, clearing, account_digits) do
-      {:ok, build_result(bank, clearing, account_number, is_valid)}
+      {:ok, build_result(bank, clearing, check_digit, account_number, is_valid)}
     end
   end
 
   def account(clearing, account_number) when is_binary(clearing) and is_binary(account_number) do
-    case parse_integer(clearing) do
+    case parse_integer(String.replace(clearing, ~r/[\s,\-]/, "")) do
       {:ok, clearing_int} -> account(clearing_int, account_number)
       error -> error
+    end
+  end
+
+  # ============================================================================
+  # PUBLIC HELPERS - Suggest clearing check_digit
+  # ============================================================================
+
+  @doc """
+  Suggests the full clearing number for banks with a 5-digit clearing
+  (Swedbank clearing numbers starting with 8).
+
+  Accepts a 4-digit clearing (missing check digit) or a 5-digit clearing
+  (possibly wrong check digit) and returns the clearing with the correct
+  check digit. Returns `:error` when the bank has a 4-digit clearing or
+  no bank matches, i.e. when there is nothing to suggest.
+
+  Note that the suggestion is only correct for the first four digits given;
+  it cannot detect a typo in those.
+
+  ## Examples
+
+      iex> Kontonummer.Validate.suggest_clearing(8327)
+      {:ok, "8327-9"}
+
+      iex> Kontonummer.Validate.suggest_clearing(83271)
+      {:ok, "8327-9"}
+
+      iex> Kontonummer.Validate.suggest_clearing(6761)
+      :error
+  """
+
+  @spec suggest_clearing(integer()) :: {:ok, String.t()} | :error
+  def suggest_clearing(clearing) when clearing > 9_999, do: suggest_clearing(div(clearing, 10))
+
+  def suggest_clearing(clearing) do
+    case Banks.bank_by_clearing(clearing) do
+      %{clearing_length: 5} ->
+        check_digit = Modulus10.check_digit(Integer.digits(clearing) ++ [0])
+        {:ok, "#{clearing}-#{check_digit}"}
+
+      _ ->
+        :error
     end
   end
 
@@ -123,7 +195,7 @@ defmodule Kontonummer.Validate do
 
   defp parse_account_number(account_number) do
     # Remove spaces, hyphens, etc.
-    cleaned = String.replace(account_number, ~r/[\s\-]/, "")
+    cleaned = String.replace(account_number, ~r/[\s,\-]/, "")
 
     # Minimum length check FIRST
     if String.length(cleaned) < 5 do
@@ -240,6 +312,42 @@ defmodule Kontonummer.Validate do
   end
 
   # ============================================================================
+  # PRIVATE HELPERS - Clearing numbers
+  # ============================================================================
+
+  # Banks with 5 digit clearing (Swedbank 8xxx-x): the digit after the first four
+  # is the clearing check digit
+  defp take_check_digit(bank, [check_digit | account_digits] = digits) do
+    case Map.get(bank, :clearing_length, 4) do
+      5 -> {:ok, check_digit, account_digits}
+      4 -> {:ok, nil, digits}
+    end
+  end
+
+  # 5-digit clearing given to account/2, e.g. 83279
+  defp split_clearing(clearing) when clearing > 9_999, do: {div(clearing, 10), rem(clearing, 10)}
+  defp split_clearing(clearing), do: {clearing, nil}
+
+  defp validate_clearing_length(bank, check_digit) do
+    case {Map.get(bank, :clearing_length, 4), check_digit} do
+      {5, nil} -> {:error, :missing_clearing_check_digit}
+      {4, digit} when is_integer(digit) -> {:error, :invalid_format}
+      _ -> :ok
+    end
+  end
+
+  # The fifth clearing digit is a modulus-10 check digit over the first four
+  defp validate_check_digit(_clearing, nil), do: :ok
+
+  defp validate_check_digit(clearing, check_digit) do
+    if Modulus10.valid?(Integer.digits(clearing) ++ [check_digit]) do
+      :ok
+    else
+      {:error, :invalid_clearing_check_digit}
+    end
+  end
+
+  # ============================================================================
   # PRIVATE HELPERS - Number building
   # ============================================================================
 
@@ -275,14 +383,17 @@ defmodule Kontonummer.Validate do
     end
   end
 
-  defp build_result(bank, clearing, account, is_valid) do
+  defp build_result(bank, clearing, check_digit, account, is_valid) do
     %{
       bank: bank.name,
       valid: is_valid,
       type: bank.type,
       comment: bank.comment,
-      clearing: clearing,
+      clearing: format_clearing(clearing, check_digit),
       account: account
     }
   end
+
+  defp format_clearing(clearing, nil), do: clearing
+  defp format_clearing(clearing, check_digit), do: "#{clearing}-#{check_digit}"
 end
