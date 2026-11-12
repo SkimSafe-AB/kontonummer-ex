@@ -409,6 +409,13 @@ defmodule Kontonummer.Banks do
     Enum.find(@banks, &clearing_in_bank?(&1, clearing_number))
   end
 
+  def bank_by_clearing(clearing_number) when is_binary(clearing_number) do
+    case Integer.parse(clearing_number) do
+      {int_clearing, ""} -> bank_by_clearing(int_clearing)
+      _ -> nil
+    end
+  end
+
   defp clearing_in_bank?(bank, clearing_number) do
     Enum.any?(bank.ranges, fn range ->
       clearing_number >= range.start and clearing_number <= range.finish
@@ -421,7 +428,20 @@ defmodule Kontonummer.Banks do
   end
 
   @spec validate_account_number(bank(), String.t()) :: boolean()
-  def validate_account_number(bank, account_number) do
+  def validate_account_number(bank, account_number) when is_integer(account_number) do
+    validate_account_number(bank, account_number |> Integer.to_string())
+  end
+
+  def validate_account_number(bank, account_number) when is_binary(account_number) do
+    account_length = String.length(account_number)
+
+    min_length_ok? =
+      is_nil(bank.account_min_length) or account_length >= bank.account_min_length
+
+    max_length_ok? =
+      is_nil(bank.account_max_length) or account_length <= bank.account_max_length
+
+    min_length_ok? and max_length_ok?
   end
 
   @doc """
